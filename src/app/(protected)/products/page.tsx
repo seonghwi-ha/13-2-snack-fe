@@ -8,6 +8,7 @@ import {
 
 import ProductListView from './ProductListView';
 import { fetchProductsOnServer } from './fetchProductsOnServer';
+import { FIRST_PRODUCT_PAGE_PARAM } from './productListPaging';
 import {
   PRODUCT_LIST_PAGE_SIZE,
   productListQueryKey,
@@ -31,6 +32,7 @@ export default async function ProductsPage({
   const { filter, sort } = resolveProductListQuery(
     firstValue(params.categoryId),
     firstValue(params.sort),
+    firstValue(params.keyword),
   );
 
   const queryClient = new QueryClient();
@@ -45,7 +47,7 @@ export default async function ProductsPage({
   if (firstPage) {
     queryClient.setQueryData(productListQueryKey(filter, sort), {
       pages: [firstPage],
-      pageParams: [1],
+      pageParams: [FIRST_PRODUCT_PAGE_PARAM],
     });
   }
 

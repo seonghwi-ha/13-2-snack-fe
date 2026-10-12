@@ -5,6 +5,7 @@ import {
 } from '@/lib/services/productService';
 
 import { DEFAULT_CATEGORY_ID, findCategory } from './productCategories';
+import { normalizeProductKeyword } from './productListPaging';
 
 /*
 @ 상품 목록 조회 조건
@@ -18,12 +19,13 @@ export const PRODUCT_LIST_PAGE_SIZE = 12;
 
 type ProductListFilter = Pick<
   ProductListParams,
-  'categoryId' | 'parentCategoryId'
+  'categoryId' | 'parentCategoryId' | 'keyword'
 >;
 
 export function resolveProductListQuery(
   categoryIdParam: string | null | undefined,
   sortParam: string | null | undefined,
+  keywordParam?: string | null,
 ) {
   const normalizedSort = sortParam ?? null;
   const sort: ProductSort = isProductSort(normalizedSort)
@@ -32,12 +34,18 @@ export function resolveProductListQuery(
   const selected =
     findCategory(Number(categoryIdParam)) ?? findCategory(DEFAULT_CATEGORY_ID);
 
-  // 소분류를 고르면 그 소분류만, 대분류만 고르면 그 아래 전체를 불러온다.
-  const filter: ProductListFilter = selected?.child
-    ? { categoryId: selected.child.id }
-    : { parentCategoryId: selected?.parent.id };
+  const keyword = normalizeProductKeyword(keywordParam);
 
-  return { sort, selected, filter };
+  // 검색어가 있으면 카테고리와 상관없이 전체 상품에서 찾는다.
+  // 서버의 오타 추천(suggestions)도 전체 상품 기준이라, 카테고리를 걸면 추천을 눌러도 0건일 수 있다.
+  // 검색어가 없으면 소분류를 고르면 그 소분류만, 대분류만 고르면 그 아래 전체를 불러온다.
+  const filter: ProductListFilter = keyword
+    ? { keyword }
+    : selected?.child
+      ? { categoryId: selected.child.id }
+      : { parentCategoryId: selected?.parent.id };
+
+  return { sort, selected, filter, keyword };
 }
 
 export function productListQueryKey(
