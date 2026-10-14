@@ -47,11 +47,16 @@ export type ProductDetail = ProductListItem & {
 
 export type ProductListResponse = {
   products: ProductListItem[];
-  page: number;
+  // page로 요청했을 때만 온다. 커서로 요청하면 위치를 페이지 번호로 말할 수 없어 빠진다.
+  page?: number;
   limit: number;
   totalCount: number;
-  totalPages: number;
+  totalPages?: number;
   hasNext: boolean;
+  /** 다음 묶음 요청에 cursor로 보낼 값. 커서를 지원하지 않는 서버는 보내지 않는다. */
+  nextCursor?: string | null;
+  /** 검색 결과가 0건일 때 서버가 추천하는 비슷한 상품명. */
+  suggestions?: string[];
 };
 
 export type ProductListParams = {
@@ -62,6 +67,8 @@ export type ProductListParams = {
   parentCategoryId?: number;
   sort?: ProductSort;
   page?: number;
+  /** 이전 응답의 nextCursor. 있으면 서버가 page를 무시한다. */
+  cursor?: string;
   limit?: number;
 };
 

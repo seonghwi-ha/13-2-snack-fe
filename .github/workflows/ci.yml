@@ -1,0 +1,55 @@
+name: CI
+
+# main으로 가는 PR과 main 푸시에서 lint·타입 검사·테스트·빌드를 자동으로 돌린다.
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+# 같은 PR에 새 커밋이 오면 이전 실행은 취소한다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint · 타입 · 테스트 · 빌드
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # next.config의 /api 프록시 주소. 빌드만 하고 호출하지 않으므로 자리 표시 값이다.
+      # 비어 있으면 rewrite 주소가 "undefined/..."가 되어 빌드가 실패한다.
+      API_URL: http://localhost:3001
+
+    steps:
+      - name: 저장소 불러오기
+        uses: actions/checkout@v4
+
+      - name: Node 버전 고정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: lint
+        run: npm run lint
+
+      # layout.tsx의 LayoutProps 등 Next가 만드는 라우트 타입은 빌드 전에는 없어서 먼저 생성한다.
+      - name: 라우트 타입 생성
+        run: npx next typegen
+
+      - name: 타입 검사
+        run: npm run type-check
+
+      - name: 테스트
+        run: npm test -- --ci
+
+      - name: 빌드
+        run: npm run build

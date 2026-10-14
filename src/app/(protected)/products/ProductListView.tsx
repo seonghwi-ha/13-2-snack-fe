@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { type FormEvent, useEffect, useRef } from 'react';
 
 import {
   type InfiniteData,
@@ -17,6 +17,7 @@ import DropdownButton from '@/components/ui/Dropdown/DropdownButton';
 import DropdownItem from '@/components/ui/Dropdown/DropdownItem';
 import SubCategoryMenu from '@/components/ui/List/SubCategoryMenu';
 import ProductCard from '@/components/ui/ProductCard/ProductCard';
+import SearchBar from '@/components/ui/SearchBar/SearchBar';
 import {
   type ProductListResponse,
   type ProductSort,
@@ -29,6 +30,11 @@ import ProductFormModalContainer from './ProductFormModalContainer';
 import SubCategoryTabs from './SubCategoryTabs';
 import { PRODUCT_CATEGORIES } from './productCategories';
 import {
+  FIRST_PRODUCT_PAGE_PARAM,
+  type ProductListPageParam,
+  getNextProductPageParam,
+} from './productListPaging';
+import {
   PRODUCT_LIST_PAGE_SIZE,
   productListQueryKey,
   resolveProductListQuery,
@@ -36,8 +42,10 @@ import {
 
 /*
 @ 상품 리스트
-- 카테고리·정렬은 URL(?categoryId=&sort=)에 둔다. 새로고침·뒤로 가기에서 상태가 유지된다.
-- 목록은 무한 스크롤이다. 화면 아래 감지용 영역이 보이면 다음 페이지를 불러온다.
+- 카테고리·정렬·검색어는 URL(?categoryId=&sort=&keyword=)에 둔다. 새로고침·뒤로 가기에서 상태가 유지된다.
+- 목록은 무한 스크롤이다. 화면 아래 감지용 영역이 보이면 다음 묶음을 불러온다.
+  첫 묶음은 page=1, 이후는 서버가 준 커서로 이어서 받는다. (productListPaging.ts)
+- 검색 결과가 없으면 서버가 추천한 비슷한 상품명을 보여주고, 누르면 그 이름으로 다시 검색한다.
 */
 
 const SORT_OPTIONS: { value: ProductSort; label: string }[] = [
@@ -95,13 +103,10 @@ export default function ProductListView() {
   }
 
   // 서버(page.tsx)가 첫 페이지를 미리 받을 때와 같은 규칙으로 조건을 만든다.
-  const {
-    sort,
-    selected,
-    filter: categoryFilter,
-  } = resolveProductListQuery(
+  const { sort, selected, filter, keyword } = resolveProductListQuery(
     searchParams.get('categoryId'),
     searchParams.get('sort'),
+    searchParams.get('keyword'),
   );
 
   const {
@@ -113,18 +118,23 @@ export default function ProductListView() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteQuery({
-    queryKey: productListQueryKey(categoryFilter, sort),
+  } = useInfiniteQuery<
+    ProductListResponse,
+    Error,
+    InfiniteData<ProductListResponse, ProductListPageParam>,
+    ReturnType<typeof productListQueryKey>,
+    ProductListPageParam
+  >({
+    queryKey: productListQueryKey(filter, sort),
     queryFn: ({ pageParam }) =>
       getProducts({
-        ...categoryFilter,
+        ...filter,
         sort,
-        page: pageParam,
+        ...pageParam,
         limit: PRODUCT_LIST_PAGE_SIZE,
       }),
-    initialPageParam: 1,
-    getNextPageParam: (lastPage) =>
-      lastPage.hasNext ? lastPage.page + 1 : undefined,
+    initialPageParam: FIRST_PRODUCT_PAGE_PARAM,
+    getNextPageParam: getNextProductPageParam,
     // 서버에서 받아 온 첫 페이지를 화면에 붙이자마자 같은 요청을 또 보내지 않게 한다.
     // (기본값 0이면 하이드레이션 직후 바로 다시 받는다.)
     // 등록·수정·찜처럼 목록이 바뀌는 동작은 캐시를 직접 무효화·수정하므로 영향이 없다.
@@ -132,6 +142,9 @@ export default function ProductListView() {
   });
 
   const products = data?.pages.flatMap((page) => page.products) ?? [];
+  // 추천은 결과가 0건일 때 첫 묶음 응답에만 온다.
+  const suggestions = data?.pages[0]?.suggestions ?? [];
+  const totalCount = data?.pages[0]?.totalCount ?? 0;
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -155,15 +168,40 @@ export default function ProductListView() {
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // 카테고리 이동은 뒤로 가기가 되도록 push, 정렬은 replace.
+  // 카테고리 이동·검색은 뒤로 가기가 되도록 push, 정렬은 replace.
+  // 검색은 전체 상품에서 찾으므로, 카테고리를 고르면 검색을 끝낸다.
   function updateQuery(
-    key: 'categoryId' | 'sort',
+    key: 'categoryId' | 'sort' | 'keyword',
     value: string,
     mode: 'push' | 'replace',
   ): void {
     const params = new URLSearchParams(searchParams.toString());
-    params.set(key, value);
-    router[mode](`${pathname}?${params.toString()}`, { scroll: false });
+
+    if (value === '') {
+      params.delete(key);
+    } else {
+      params.set(key, value);
+    }
+
+    if (key === 'categoryId') {
+      params.delete('keyword');
+    }
+
+    const query = params.toString();
+    router[mode](query === '' ? pathname : `${pathname}?${query}`, {
+      scroll: false,
+    });
+  }
+
+  // Enter를 눌러야 URL에 반영되어 검색한다.
+  function handleSearchSubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const value = new FormData(event.currentTarget).get('keyword');
+    updateQuery(
+      'keyword',
+      typeof value === 'string' ? value.trim() : '',
+      'push',
+    );
   }
 
   function handleOpenCreateModal(): void {
@@ -175,7 +213,8 @@ export default function ProductListView() {
       <SubCategoryTabs
         className="md:hidden"
         categories={selected?.parent.children ?? []}
-        selectedId={selected?.child?.id}
+        // 검색은 전체 상품에서 찾으므로 검색 중에는 카테고리 선택 표시를 끈다.
+        selectedId={keyword ? undefined : selected?.child?.id}
         onSelect={(id) => updateQuery('categoryId', String(id), 'push')}
       />
 
@@ -183,31 +222,66 @@ export default function ProductListView() {
         <aside aria-label="카테고리" className="hidden shrink-0 md:block">
           <SubCategoryMenu
             categories={PRODUCT_CATEGORIES}
-            selectedCategoryId={selected?.child?.id}
+            selectedCategoryId={keyword ? undefined : selected?.child?.id}
             onSelect={(id) => updateQuery('categoryId', String(id), 'push')}
           />
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col gap-5 md:gap-[30px]">
           <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between md:gap-0 md:border-b md:border-primary-100 md:pb-5">
-            {selected && (
-              <nav
-                aria-label="현재 카테고리"
-                className="flex items-center gap-1 pt-3.5 pb-2.5 text-14-regular md:p-0 lg:text-16-regular"
+            {keyword ? (
+              <p
+                aria-live="polite"
+                className="flex items-center gap-1 pt-3.5 pb-2.5 text-14-regular text-primary-950 md:p-0 lg:text-16-regular"
               >
-                <span className="text-primary-300">{selected.parent.name}</span>
-                {selected.child && (
-                  <>
-                    <ChevronRightIcon className="size-4 text-primary-300" />
-                    <span className="text-primary-950">
-                      {selected.child.name}
-                    </span>
-                  </>
+                <span className="min-w-0 truncate">‘{keyword}’ 검색 결과</span>
+                {!isPending && !isError && (
+                  <span className="shrink-0 text-primary-300">
+                    {totalCount}개
+                  </span>
                 )}
-              </nav>
+              </p>
+            ) : (
+              selected && (
+                <nav
+                  aria-label="현재 카테고리"
+                  className="flex items-center gap-1 pt-3.5 pb-2.5 text-14-regular md:p-0 lg:text-16-regular"
+                >
+                  <span className="text-primary-300">
+                    {selected.parent.name}
+                  </span>
+                  {selected.child && (
+                    <>
+                      <ChevronRightIcon className="size-4 text-primary-300" />
+                      <span className="text-primary-950">
+                        {selected.child.name}
+                      </span>
+                    </>
+                  )}
+                </nav>
+              )
             )}
 
-            <div className="flex items-center justify-between border-b border-primary-100 pb-5 md:justify-start md:gap-[30px] md:border-0 md:pb-0">
+            <div className="flex flex-wrap items-center justify-between gap-y-3 border-b border-primary-100 pb-5 md:flex-nowrap md:justify-start md:gap-[30px] md:border-0 md:pb-0">
+              {/*
+                입력칸은 URL 검색어를 기본값으로 두고, 검색어가 바뀌면 key로 다시 그린다.
+                추천 클릭·뒤로 가기로 URL이 바뀌어도 입력칸이 따라온다.
+              */}
+              <form
+                key={keyword}
+                role="search"
+                onSubmit={handleSearchSubmit}
+                className="w-full md:w-auto"
+              >
+                <SearchBar
+                  aria-label="상품 검색"
+                  placeholder="상품명으로 검색하세요"
+                  name="keyword"
+                  defaultValue={keyword}
+                  className="w-full md:w-[220px] lg:w-[260px]"
+                />
+              </form>
+
               <DropdownButton
                 value={sort}
                 onChange={(value) => updateQuery('sort', value, 'replace')}
@@ -264,9 +338,39 @@ export default function ProductListView() {
               ))}
             </ul>
           ) : products.length === 0 ? (
-            <p className="py-20 text-center text-16-regular text-primary-400">
-              등록된 상품이 없습니다.
-            </p>
+            keyword ? (
+              <div className="flex flex-col items-center gap-5 py-20 text-center">
+                <p className="text-16-regular text-primary-400">
+                  ‘{keyword}’에 대한 검색 결과가 없습니다.
+                </p>
+                {suggestions.length > 0 && (
+                  <div className="flex flex-col items-center gap-3">
+                    <p className="text-16-bold text-primary-950">
+                      혹시 이 상품을 찾으셨나요?
+                    </p>
+                    <ul className="flex flex-wrap justify-center gap-2">
+                      {suggestions.map((suggestion) => (
+                        <li key={suggestion}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateQuery('keyword', suggestion, 'push')
+                            }
+                            className="h-10 rounded-full border border-primary-200 px-4 text-14-regular text-primary-950 hover:bg-primary-25"
+                          >
+                            {suggestion}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="py-20 text-center text-16-regular text-primary-400">
+                등록된 상품이 없습니다.
+              </p>
+            )
           ) : (
             <>
               <ul className="grid grid-cols-2 gap-x-4 gap-y-10 md:grid-cols-3 md:gap-x-3.5 md:gap-y-[50px] lg:gap-x-10 lg:gap-y-[60px]">
