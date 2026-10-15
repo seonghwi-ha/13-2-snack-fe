@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
@@ -22,6 +22,11 @@ import {
 } from '@/lib/services/cartService';
 import { ApiError } from '@/lib/services/fetchClient';
 import {
+  createIdempotencyKey,
+  isIdempotencyInProgressError,
+  isRetryableOrderError,
+} from '@/lib/services/idempotencyKey';
+import {
   type CreateOrderInput,
   type CreateOrderResult,
   createOrder,
@@ -40,6 +45,8 @@ const DELIVERY_FEE = 3000;
 const OVER_BUDGET_MESSAGE = '이번 달 남은 예산을 초과했습니다.';
 const CART_ITEMS_QUERY_KEY = ['cartItems'] as const;
 const BUDGET_QUERY_KEY = ['budget'] as const;
+// 응답을 받지 못했을 때 같은 멱등성 키로 다시 보내는 횟수
+const ORDER_RETRY_COUNT = 2;
 
 const REQUEST_HELPER_TEXT =
   '배송 요청사항이 있다면 입력해 주세요. 입력하지 않아도 구매 요청이 가능합니다.';
@@ -148,13 +155,30 @@ export default function CartScreen() {
     },
   });
 
+  // 같은 내용으로 다시 구매하면 같은 키를, 내용이 바뀌면 새 키를 쓴다.
+  const orderAttemptRef = useRef<{ payload: string; key: string } | null>(null);
+
   const createOrderMutation = useMutation<
     CreateOrderResult,
     Error,
-    CreateOrderInput
+    { input: CreateOrderInput; idempotencyKey: string }
   >({
-    mutationFn: createOrder,
+    mutationFn: ({ input, idempotencyKey }) =>
+      createOrder(input, { idempotencyKey }),
+    retry: (failureCount, error) =>
+      failureCount < ORDER_RETRY_COUNT && isRetryableOrderError(error),
+    retryDelay: (attempt) => 500 * 2 ** attempt,
   });
+
+  function getOrderIdempotencyKey(input: CreateOrderInput): string {
+    const payload = JSON.stringify(input);
+
+    if (orderAttemptRef.current?.payload !== payload) {
+      orderAttemptRef.current = { payload, key: createIdempotencyKey() };
+    }
+
+    return orderAttemptRef.current.key;
+  }
 
   const items = cartQuery.data ?? [];
   const remainingBudget = budgetQuery.data
@@ -362,14 +386,20 @@ export default function CartScreen() {
     try {
       const trimmedMessage = requestMessage.trim();
 
-      await createOrderMutation.mutateAsync({
+      const input: CreateOrderInput = {
         items: itemsToOrder.map((item) => ({
           cartItemId: item.id,
           quantity: item.quantity,
         })),
         requestMessage:
           isInstantBuyer || trimmedMessage === '' ? undefined : trimmedMessage,
+      };
+
+      await createOrderMutation.mutateAsync({
+        input,
+        idempotencyKey: getOrderIdempotencyKey(input),
       });
+      orderAttemptRef.current = null;
 
       setOrderedItems(itemsToOrder);
       updateCartItems(items.filter((item) => !orderedIds.has(item.id)));
@@ -384,6 +414,13 @@ export default function CartScreen() {
         setIsBudgetInsufficient(true);
         setPurchaseError(error.message);
         await queryClient.invalidateQueries({ queryKey: BUDGET_QUERY_KEY });
+        return;
+      }
+
+      if (isIdempotencyInProgressError(error)) {
+        openToast({
+          text: '요청을 처리하고 있어요. 잠시 후 구매 내역을 확인해주세요.',
+        });
         return;
       }
 
