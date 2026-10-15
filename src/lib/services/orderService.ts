@@ -24,12 +24,19 @@ export type CreateOrderResult = {
   id: number;
 };
 
+export type CreateOrderOptions = {
+  // 재시도할 때 같은 값을 보내면 서버가 주문을 한 번만 만든다.
+  idempotencyKey?: string;
+};
+
 export async function createOrder(
   input: CreateOrderInput,
+  { idempotencyKey }: CreateOrderOptions = {},
 ): Promise<CreateOrderResult> {
   return fetchClient<CreateOrderResult>('/orders', {
     method: 'POST',
     body: JSON.stringify(input),
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
   });
 }
 
